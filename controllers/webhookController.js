@@ -5,7 +5,7 @@ import notificationService from '../services/notificationService.js';
 import whatsappService from '../services/whatsappService.js';
 import chatwootService from '../services/chatwootService.js';
 import { getGeminiClient } from '../src/geminiClient.js';
-import { createClient } from '@supabase/supabase-js';
+import { getSupabaseClient, getClinicByWabaPhoneId } from '../services/leadService.js';
 
 function extractPlainText(input) {
   let cleaned = typeof input === 'string' ? input : JSON.stringify(input);
@@ -91,23 +91,25 @@ export default async function webhookController(req, res, next) {
       const contactPhoneRaw = contact?.phone_number || contact?.phone || (p?.sender_contact?.phone_number) || null;
       const contactDigits = contactPhoneRaw ? String(contactPhoneRaw).replace(/\D/g, '') : null;
 
-      // Lookup clinic by chatwoot_inbox_id or account
+      // Lookup clinic by chatwoot_inbox_id or account. If Supabase is not configured or the clinic record is absent,
+      // keep the conversation alive using the configured fallback clinic name instead of failing the flow.
       const phoneNumberId = String(inbox?.id || payload?.account_id || '').trim();
       let clinic = null;
       try {
-        const rawUrl = config.supabase?.url || process.env.SUPABASE_URL;
-        const key = config.supabase?.serviceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE;
-        const supabase = createClient(rawUrl, key);
+        const client = getSupabaseClient();
         if (inbox?.id) {
-          const { data } = await supabase.from('clinics').select('*').eq('chatwoot_inbox_id', inbox.id).maybeSingle();
+          const { data, error } = await client.from('clinics').select('*').eq('chatwoot_inbox_id', inbox.id).maybeSingle();
+          if (error) throw error;
           clinic = data || null;
         }
         if (!clinic && payload?.account_id) {
-          const { data } = await supabase.from('clinics').select('*').eq('chatwoot_account_id', payload.account_id).maybeSingle();
+          const { data, error } = await client.from('clinics').select('*').eq('chatwoot_account_id', payload.account_id).maybeSingle();
+          if (error) throw error;
           clinic = data || null;
         }
       } catch (e) {
-        console.error('webhookController: error looking up clinic for chatwoot webhook', e && e.message ? e.message : e);
+        console.warn('webhookController: clinic lookup for chatwoot webhook failed or was unavailable; using fallback clinic name', e && e.message ? e.message : e);
+        clinic = null;
       }
 
       // Update clinicName from clinic if available
@@ -321,13 +323,13 @@ export default async function webhookController(req, res, next) {
         let clinic = null;
         if (phoneNumberId) {
           try {
-            const client = getSupabaseClient();
-            const { data } = await client.from('clinics').select('*').eq('waba_phone_number_id', phoneNumberId).maybeSingle();
-            clinic = data || null;
+            clinic = await getClinicByWabaPhoneId(phoneNumberId);
           } catch (e) {
-            console.error('webhookController: error looking up clinic by waba_phone_number_id', e && e.message ? e.message : e);
+            console.warn('webhookController: clinic lookup by waba_phone_number_id failed; continuing with fallback clinic name', e && e.message ? e.message : e);
+            clinic = null;
           }
         }
+        clinicName = (clinic && clinic.name) || process.env.CLINIC_NAME_FALLBACK || config.clinicNameFallback || 'nuestra clínica dental';
  
         let texto = 'Disculpa, hubo un problema procesando tu mensaje.';
         let leadData = null;

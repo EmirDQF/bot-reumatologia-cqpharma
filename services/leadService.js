@@ -12,7 +12,7 @@ function normalizeSupabaseUrl(url) {
   return url.replace(/\/rest\/v1\/?$/i, '').replace(/\/$/, '');
 }
 
-function getSupabaseClient() {
+export function getSupabaseClient() {
   if (supabase) return supabase;
   const rawUrl = config.supabase?.url || process.env.SUPABASE_URL;
   const key = config.supabase?.serviceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE;
@@ -564,6 +564,7 @@ export default {
   listLeads,
   validateLead,
   initSupabaseClient,
+  getSupabaseClient,
   getClinicByWabaPhoneId,
   _internals: { normalizePhone },
 };
