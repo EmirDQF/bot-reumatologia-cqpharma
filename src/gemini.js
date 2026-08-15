@@ -5,7 +5,9 @@ import { saveLead } from './leads.js';
 
 
 const apiKey = process.env.GEMINI_API_KEY;
-const geminiModel = /^(gemini-(1\.5|2\.0|2\.5)[a-z0-9-]*)$/i.test(String(process.env.GEMINI_MODEL || '').trim()) ? process.env.GEMINI_MODEL : 'gemini-1.5-flash';
+// Preferred model order when a model is missing: try newest flash models first
+const ALLOWED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b'];
+const geminiModel = /^(gemini-(1\.5|2\.0|2\.5)[a-z0-9-]*)$/i.test(String(process.env.GEMINI_MODEL || '').trim()) ? process.env.GEMINI_MODEL : ALLOWED_MODELS[0];
 const ttlMs = 30 * 60 * 1000;
 const contingencyMessage = 'En este momento nuestro sistema está ocupado, un asesor te responderá a la brevedad.';
 const chatSessions = new Map();
@@ -32,6 +34,40 @@ function getModel() {
   }
 
   return model;
+}
+
+async function generateContentWithModelFallback(request) {
+  const configured = geminiModel;
+  const modelsToTry = [configured, ...ALLOWED_MODELS.filter((m) => m !== configured)];
+  let lastErr = null;
+
+  for (const modelName of modelsToTry) {
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const m = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction: SYSTEM_PROMPT,
+        generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
+      });
+      return await m.generateContent(request);
+    } catch (e) {
+      lastErr = e;
+      const status = e && (e.status || e.code || null);
+      const msg = String(e && (e.message || ''));
+      if (status === 404 || /\b404\b/.test(msg) || /not available|no longer available|model not found/i.test(msg)) {
+        console.warn(`[src/gemini.js] Model ${modelName} not available (${msg}). Trying next model.`);
+        continue;
+      }
+      const isTransient = /timeout|network|ECONNRESET|ECONNREFUSED|5\d{2}/i.test(msg);
+      if (isTransient) {
+        console.warn(`[src/gemini.js] Transient error for model ${modelName}: ${msg} — trying next model.`);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  throw lastErr || new Error('All Gemini models failed');
 }
 
 function extractTextFromCandidate(candidate) {
@@ -169,7 +205,7 @@ async function extractLeadData(history) {
     };
 
     try {
-      const result = await getModel().generateContent(request);
+      const result = await generateContentWithModelFallback(request);
 
       // Preferir extracción formal desde response.functionCalls/toolCalls (más fiable que parsear texto)
     let argsObj = null;

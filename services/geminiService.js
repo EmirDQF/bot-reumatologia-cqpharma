@@ -1,5 +1,8 @@
 import config from '../config/env.js';
 
+// Model fallback order: prefer the newest flash models first
+const ALLOWED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b'];
+
 const TTL_MS = Number(process.env.GEMINI_SESSION_TTL_MS || 30 * 60 * 1000); // 30 minutes
 // Booked sessions (confirmed appointments) should persist much longer to avoid losing booking context if user replies slowly
 const BOOKED_TTL_MS = Number(process.env.GEMINI_BOOKED_SESSION_TTL_MS || 7 * 24 * 3600 * 1000); // 7 days
@@ -894,74 +897,75 @@ function buildGeminiRequest(client, mensaje, history, jid, options = {}) {
 }
 
 async function callClientWithRetries(client, geminiRequest, maxRetries = 1, options = {}) {
-  let attempt = 0;
+  // Attempt first the configured model, then fall back to ALLOWED_MODELS order if a 404 is returned
+  const configuredModel = (config && config.gemini && config.gemini.model) ? config.gemini.model : ALLOWED_MODELS[0];
+  const modelsToTry = [configuredModel, ...ALLOWED_MODELS.filter((m) => m !== configuredModel)];
+
+  // Helper to attempt a single call with a given model
+  async function attemptCallWithModel(modelName) {
+    if (!client || (typeof client.generate !== 'function' && typeof client.generateContent !== 'function')) {
+      const fallbackText = typeof geminiRequest === 'object' && geminiRequest.prompt ? geminiRequest.prompt : '';
+      return { text: `Echo: ${String(fallbackText).slice(0, 200)}` };
+    }
+
+    // Structured client + structured request
+    if (isStructuredGeminiClient(client) && geminiRequest?.type === 'structured') {
+      return await client.generateContent(geminiRequest.request, { model: modelName });
+    }
+
+    // Legacy generate API
+    if (typeof client.generate === 'function') {
+      return await client.generate(geminiRequest.prompt || '', { model: modelName, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
+    }
+
+    // Fallback to generateContent if available
+    if (typeof client.generateContent === 'function' && geminiRequest?.type === 'structured') {
+      return await client.generateContent(geminiRequest.request, { model: modelName });
+    }
+
+    throw new Error('Gemini client does not support generate or generateContent');
+  }
+
+  // For each model in order, try up to (maxRetries+1) attempts for transient errors; on 404 move to next model immediately
   let lastErr = null;
-  const attempts = maxRetries + 1;
-  while (attempt < attempts) {
-    attempt += 1;
-    try {
-      if (!client || (typeof client.generate !== 'function' && typeof client.generateContent !== 'function')) {
-        // No real client: fallback to echo-like simple response
-        const fallbackText = typeof geminiRequest === 'object' && geminiRequest.prompt ? geminiRequest.prompt : '';
-        return { text: `Echo: ${String(fallbackText).slice(0, 200)}` };
-      }
+  for (const modelName of modelsToTry) {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        if (attempt > 0) {
+          console.warn(`[geminiService] Retrying model ${modelName} attempt ${attempt + 1}/${maxRetries + 1}`);
+        }
+        const res = await attemptCallWithModel(modelName);
+        return res;
+      } catch (e) {
+        lastErr = e;
+        const status = e && (e.status || e.code || null);
+        const msg = String(e && (e.message || ''));
 
-      if (isStructuredGeminiClient(client) && geminiRequest?.type === 'structured') {
-        try {
-          return await client.generateContent(geminiRequest.request, { model: config.gemini?.model });
-        } catch (e) {
-          console.error('[geminiService] Gemini generateContent failed for structured request', {
-            message: e && e.message ? e.message : String(e),
-            code: e && e.code ? e.code : null,
-            status: e && e.status ? e.status : null,
-            stack: e && e.stack ? e.stack : null,
-            requestPreview: geminiRequest && geminiRequest.request ? JSON.stringify(geminiRequest.request).slice(0, 1500) : null,
-          });
+        // If 404 (model not found) then move to next model immediately
+        if (status === 404 || /\b404\b/.test(msg) || /not available|no longer available|model not found/i.test(msg)) {
+          console.warn(`[geminiService] Model ${modelName} returned 404 or not available. Trying next model in fallback list.`);
+          break; // break retry loop and try next model
+        }
+
+        // For transient errors, allow retrying same model
+        const isTransient = /timeout|network|ECONNRESET|ECONNREFUSED|5\d{2}/i.test(msg);
+        if (!isTransient) {
+          // Non-transient and not 404: abort entirely
           throw e;
         }
-      }
 
-      if (typeof client.generate === 'function') {
-        try {
-          return await client.generate(geminiRequest.prompt || '', { model: config.gemini?.model, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
-        } catch (e) {
-          console.error('[geminiService] Gemini generate() failed', {
-            message: e && e.message ? e.message : String(e),
-            code: e && e.code ? e.code : null,
-            status: e && e.status ? e.status : null,
-            stack: e && e.stack ? e.stack : null,
-            promptPreview: typeof geminiRequest?.prompt === 'string' ? geminiRequest.prompt.slice(0, 1500) : null,
-          });
-          throw e;
+        // If this was the last attempt for this model, log and allow outer loop to try next model
+        if (attempt === maxRetries) {
+          console.warn(`[geminiService] Model ${modelName} failed after ${maxRetries + 1} attempts: ${msg}`);
+        } else {
+          // wait briefly before retry
+          await new Promise((r) => setTimeout(r, attempt === 0 ? 500 : 1500));
+          continue;
         }
       }
-
-      if (typeof client.generateContent === 'function' && geminiRequest?.type === 'structured') {
-        // generationConfig already included in geminiRequest.request; still pass model
-        try {
-          return await client.generateContent(geminiRequest.request, { model: config.gemini?.model });
-        } catch (e) {
-          console.error('[geminiService] Gemini generateContent failed in fallback path', {
-            message: e && e.message ? e.message : String(e),
-            code: e && e.code ? e.code : null,
-            status: e && e.status ? e.status : null,
-            stack: e && e.stack ? e.stack : null,
-            requestPreview: geminiRequest && geminiRequest.request ? JSON.stringify(geminiRequest.request).slice(0, 1500) : null,
-          });
-          throw e;
-        }
-      }
-
-      throw new Error('Gemini client does not support generate or generateContent');
-    } catch (e) {
-      lastErr = e;
-      const msg = String(e && (e.message || e.code || ''));
-      const isRetriable = /timeout|network|ECONNRESET|ECONNREFUSED|5\d{2}/i.test(msg);
-      if (!isRetriable) break;
-      await new Promise((r) => setTimeout(r, attempt === 1 ? 500 : 1500));
-      continue;
     }
   }
+
   throw lastErr || new Error('client failed');
 }
 
