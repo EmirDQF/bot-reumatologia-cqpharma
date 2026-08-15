@@ -6,8 +6,19 @@ import { saveLead } from './leads.js';
 
 const apiKey = process.env.GEMINI_API_KEY;
 // Preferred model order when a model is missing: try newest flash models first
-const ALLOWED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b'];
-const geminiModel = /^(gemini-(1\.5|2\.0|2\.5)[a-z0-9-]*)$/i.test(String(process.env.GEMINI_MODEL || '').trim()) ? process.env.GEMINI_MODEL : ALLOWED_MODELS[0];
+const ALLOWED_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash-exp',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-1.5-flash-8b',
+];
+// Clean any possible "models/" prefix from env var; fall back to first allowed model
+const geminiModelRaw = String(process.env.GEMINI_MODEL || '').trim();
+const geminiModel = geminiModelRaw ? geminiModelRaw.replace(/^models\//i, '') : ALLOWED_MODELS[0];
+console.info(`[src/gemini.js] GEMINI_MODEL raw: "${geminiModelRaw}" -> cleaned: "${geminiModel}"`);
+console.info(`[src/gemini.js] ALLOWED_MODELS: ${JSON.stringify(ALLOWED_MODELS)}`);
 const ttlMs = 30 * 60 * 1000;
 const contingencyMessage = 'En este momento nuestro sistema está ocupado, un asesor te responderá a la brevedad.';
 const chatSessions = new Map();
@@ -43,9 +54,10 @@ async function generateContentWithModelFallback(request) {
 
   for (const modelName of modelsToTry) {
     try {
+      const cleanModelName = String(modelName || '').replace(/^models\//i, '');
       const genAI = new GoogleGenerativeAI(apiKey);
       const m = genAI.getGenerativeModel({
-        model: modelName,
+        model: cleanModelName,
         systemInstruction: SYSTEM_PROMPT,
         generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
       });
@@ -54,6 +66,25 @@ async function generateContentWithModelFallback(request) {
       lastErr = e;
       const status = e && (e.status || e.code || null);
       const msg = String(e && (e.message || ''));
+
+      // Try to extract richer response body/details
+      let errorBody = null;
+      try {
+        errorBody = e && (e.response?.data || e.response?.body || e.body || e.data || e.rawResponse || null);
+        if (!errorBody && e && e.response && typeof e.response.text === 'function') {
+          try { errorBody = await e.response.text(); } catch (_) { /* ignore */ }
+        }
+      } catch (_) { /* ignore */ }
+
+      console.error(`[src/gemini.js] Error for model ${modelName} (clean: ${String(modelName || '').replace(/^models\//i, '')}) -> status: ${status}, message: ${msg}`);
+      if (errorBody) {
+        try {
+          console.error('[src/gemini.js] Error body:', typeof errorBody === 'string' ? errorBody : JSON.stringify(errorBody));
+        } catch (se) {
+          console.error('[src/gemini.js] Error body (stringify failed):', String(errorBody));
+        }
+      }
+
       if (status === 404 || /\b404\b/.test(msg) || /not available|no longer available|model not found/i.test(msg)) {
         console.warn(`[src/gemini.js] Model ${modelName} not available (${msg}). Trying next model.`);
         continue;

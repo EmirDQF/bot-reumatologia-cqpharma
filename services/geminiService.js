@@ -1,7 +1,20 @@
 import config from '../config/env.js';
 
-// Model fallback order: prefer the newest flash models first
-const ALLOWED_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b'];
+// Expanded model fallback list (include older 1.5 variants and 2.0 fallback)
+const ALLOWED_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash-exp',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-1.5-flash-8b',
+];
+
+// Log configured vs cleaned model on startup so Render logs show what will be attempted
+const configuredModelRaw = (config && config.gemini && config.gemini.model) ? String(config.gemini.model) : (process.env.GEMINI_MODEL || '');
+const configuredModelClean = configuredModelRaw ? configuredModelRaw.replace(/^models\//i, '') : '';
+console.info(`[geminiService] Configured Gemini model (raw): "${configuredModelRaw}" -> cleaned: "${configuredModelClean || ALLOWED_MODELS[0]}"`);
+console.info(`[geminiService] Allowed models (fallback order): ${JSON.stringify(ALLOWED_MODELS)}`);
 
 const TTL_MS = Number(process.env.GEMINI_SESSION_TTL_MS || 30 * 60 * 1000); // 30 minutes
 // Booked sessions (confirmed appointments) should persist much longer to avoid losing booking context if user replies slowly
@@ -897,12 +910,16 @@ function buildGeminiRequest(client, mensaje, history, jid, options = {}) {
 }
 
 async function callClientWithRetries(client, geminiRequest, maxRetries = 1, options = {}) {
-  // Attempt first the configured model, then fall back to ALLOWED_MODELS order if a 404 is returned
-  const configuredModel = (config && config.gemini && config.gemini.model) ? config.gemini.model : ALLOWED_MODELS[0];
-  const modelsToTry = [configuredModel, ...ALLOWED_MODELS.filter((m) => m !== configuredModel)];
+  // Attempt first the configured model (cleaned), then fall back to ALLOWED_MODELS order if a 404 is returned
+  const configuredModelRawLocal = (config && config.gemini && config.gemini.model) ? String(config.gemini.model) : (process.env.GEMINI_MODEL || '');
+  const configuredModelLocal = configuredModelRawLocal.replace(/^models\//i, '') || ALLOWED_MODELS[0];
+  const modelsToTry = [configuredModelLocal, ...ALLOWED_MODELS.filter((m) => m !== configuredModelLocal)];
 
-  // Helper to attempt a single call with a given model
+  // Helper to attempt a single call with a given model (ensures model name is cleaned before calling SDK)
   async function attemptCallWithModel(modelName) {
+    const cleanModel = String(modelName || '').replace(/^models\//i, '');
+    console.info(`[geminiService] Attempting Gemini model: "${cleanModel}"`);
+
     if (!client || (typeof client.generate !== 'function' && typeof client.generateContent !== 'function')) {
       const fallbackText = typeof geminiRequest === 'object' && geminiRequest.prompt ? geminiRequest.prompt : '';
       return { text: `Echo: ${String(fallbackText).slice(0, 200)}` };
@@ -910,17 +927,17 @@ async function callClientWithRetries(client, geminiRequest, maxRetries = 1, opti
 
     // Structured client + structured request
     if (isStructuredGeminiClient(client) && geminiRequest?.type === 'structured') {
-      return await client.generateContent(geminiRequest.request, { model: modelName });
+      return await client.generateContent(geminiRequest.request, { model: cleanModel });
     }
 
     // Legacy generate API
     if (typeof client.generate === 'function') {
-      return await client.generate(geminiRequest.prompt || '', { model: modelName, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
+      return await client.generate(geminiRequest.prompt || '', { model: cleanModel, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
     }
 
     // Fallback to generateContent if available
     if (typeof client.generateContent === 'function' && geminiRequest?.type === 'structured') {
-      return await client.generateContent(geminiRequest.request, { model: modelName });
+      return await client.generateContent(geminiRequest.request, { model: cleanModel });
     }
 
     throw new Error('Gemini client does not support generate or generateContent');
@@ -940,6 +957,27 @@ async function callClientWithRetries(client, geminiRequest, maxRetries = 1, opti
         lastErr = e;
         const status = e && (e.status || e.code || null);
         const msg = String(e && (e.message || ''));
+
+        // Try to extract richer response body/details from common shapes
+        let errorBody = null;
+        try {
+          errorBody = e && (e.response?.data || e.response?.body || e.body || e.data || e.rawResponse || null);
+          if (!errorBody && e && e.response && typeof e.response.text === 'function') {
+            // some SDKs expose a text() function on response
+            try { errorBody = await e.response.text(); } catch (_) { /* ignore */ }
+          }
+        } catch (inner) {
+          // ignore extraction errors
+        }
+
+        console.error(`[geminiService] Error for model ${modelName} -> status: ${status}, message: ${msg}`);
+        if (errorBody) {
+          try {
+            console.error('[geminiService] Error body:', typeof errorBody === 'string' ? errorBody : JSON.stringify(errorBody));
+          } catch (se) {
+            console.error('[geminiService] Error body (stringify failed):', String(errorBody));
+          }
+        }
 
         // If 404 (model not found) then move to next model immediately
         if (status === 404 || /\b404\b/.test(msg) || /not available|no longer available|model not found/i.test(msg)) {
