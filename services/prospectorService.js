@@ -4,10 +4,11 @@ import { createClient } from '@supabase/supabase-js';
 const META_TOKEN = process.env.META_AD_LIBRARY_TOKEN || null;
 const COUNTRY = process.env.PROSPECTOR_COUNTRY || 'PE';
 const KEYWORDS = [
-  'clínica dental',
-  'ortodoncia',
-  'diseño de sonrisa',
-  'implantes dentales'
+  'reumatología',
+  'densitometría ósea',
+  'suplementos nutricionales',
+  'colágeno hidrolizado',
+  'calcio vitamina d'
 ];
 
 const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);

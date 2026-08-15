@@ -55,10 +55,10 @@ function maskPhone(phone) {
 export default {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY,
-    model: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
+    model: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
     maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 110),
   },
-  clinicNameFallback: process.env.CLINIC_NAME_FALLBACK || 'nuestra clínica dental',
+  clinicNameFallback: process.env.CLINIC_NAME_FALLBACK || 'Centro Especializado en Reumatología y Salud Ósea',
   whatsapp: {
     token: process.env.WHATSAPP_TOKEN || null,
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,

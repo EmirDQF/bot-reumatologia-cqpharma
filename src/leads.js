@@ -88,12 +88,13 @@ async function safeWriteLeads(leads) {
 // - isNew: true si el teléfono no existía previamente
 // - readyToNotify: true solo si nombre, distrito y fechaHora están presentes (lista para notificar agenda)
 // Guarda o actualiza un lead: evita duplicados por teléfono, actualiza timestamps y marca si la entrada incluye fecha/hora de cita.
-export async function saveLead({ telefono, nombre, distrito, fechaHora, fechaHoraISO, fechaHoraTexto, fechaHoraConfirmada }) {
+export async function saveLead({ telefono, nombre, distrito, fechaHora, fechaHoraISO, fechaHoraTexto, fechaHoraConfirmada, servicio = null, servicioInteres = null }) {
   return withLeadsLock(async () => {
     try {
       const leads = await loadLeads();
       const normalizedPhone = normalizePhone(telefono);
       const now = new Date().toISOString();
+      const resolvedServicio = (typeof servicio === 'string' && servicio.trim()) ? servicio.trim() : ((typeof servicioInteres === 'string' && servicioInteres.trim()) ? servicioInteres.trim() : null);
 
       // Buscar por telefono normalizado si está disponible, si no buscar por telefonoOriginal (si coincide)
       let existingLead = null;
@@ -107,6 +108,8 @@ export async function saveLead({ telefono, nombre, distrito, fechaHora, fechaHor
         // Lead ya existente: actualizar datos parciales y marcar ultimoContacto
         existingLead.nombre = nombre || existingLead.nombre || null;
         existingLead.distrito = distrito || existingLead.distrito || null;
+        existingLead.servicio = resolvedServicio || existingLead.servicio || null;
+        existingLead.servicioInteres = resolvedServicio || existingLead.servicioInteres || null;
         // Mantener/actualizar campos de fechaHora
         existingLead.fechaHoraISO = fechaHoraISO ?? existingLead.fechaHoraISO ?? null;
         existingLead.fechaHoraTexto = fechaHoraTexto ?? existingLead.fechaHoraTexto ?? null;
@@ -127,6 +130,8 @@ export async function saveLead({ telefono, nombre, distrito, fechaHora, fechaHor
         telefonoOriginal: normalizedPhone ? null : (telefono ? telefono.toString() : null),
         nombre: nombre || null,
         distrito: distrito || null,
+        servicio: resolvedServicio || null,
+        servicioInteres: resolvedServicio || null,
         fechaHoraISO: fechaHoraISO || null,
         fechaHoraTexto: fechaHoraTexto || null,
         fechaHoraConfirmada: Boolean(fechaHoraConfirmada),

@@ -39,7 +39,7 @@ function sanitizeDistrict(value) {
   if (!value || typeof value !== 'string') return null;
   const normalized = value.trim();
   const low = normalized.toLowerCase();
-  const banned = ['nuestra clínica', 'nuestra clinica', 'nuestra clínica dental', 'nuestra clinica dental', 'en lima', 'lima', 'no proporcionado', 'no proporcionada', 'el de siempre'];
+  const banned = ['nuestra clínica', 'nuestra clinica', 'en lima', 'lima', 'no proporcionado', 'no proporcionada', 'el de siempre', 'a confirmar', 'por confirmar'];
   for (const bad of banned) {
     if (low.includes(bad)) return null;
   }
@@ -105,7 +105,7 @@ export async function listLeads() {
   return Array.isArray(data) ? data : [];
 }
 
-export async function saveLead({ telefono, nombre, distrito, fechaHoraISO, fechaHoraTexto, confirmed = false, clinicId = null, clinic = null } = {}) {
+export async function saveLead({ telefono, nombre, distrito, fechaHoraISO, fechaHoraTexto, servicio = null, servicioInteres = null, confirmed = false, clinicId = null, clinic = null } = {}) {
   const client = getSupabaseClient();
   try {
     if (!telefono && telefono !== 0) {
@@ -114,6 +114,7 @@ export async function saveLead({ telefono, nombre, distrito, fechaHoraISO, fecha
 
     const normalized = normalizePhone(telefono);
     const now = new Date().toISOString();
+    const incomingServicio = typeof servicio === 'string' ? servicio.trim() : (typeof servicioInteres === 'string' ? servicioInteres.trim() : null);
 
     // 1. Intentar obtener si el lead ya existe y si ya fue notificado previamente
     let existingData = null;
@@ -223,6 +224,16 @@ export async function saveLead({ telefono, nombre, distrito, fechaHoraISO, fecha
       }
     }
 
+    const finalServicio = incomingServicio || (existingData?.servicio) || (existingData?.servicio_interes) || (existingData?.lead_snapshot && typeof existingData.lead_snapshot === 'object' ? existingData.lead_snapshot.servicio : null) || null;
+    const persistedLeadSnapshot = {
+      ...(existingData && existingData.lead_snapshot && typeof existingData.lead_snapshot === 'object' ? existingData.lead_snapshot : {}),
+      ...(finalNombre ? { nombre: finalNombre } : {}),
+      ...(finalDistrito ? { distrito: finalDistrito } : {}),
+      ...(incomingFechaTexto || existingData?.fecha_hora_texto ? { fecha_hora_texto: incomingFechaTexto || existingData?.fecha_hora_texto || null } : {}),
+      ...(incomingFechaIso || existingData?.fecha_hora_iso ? { fecha_hora_iso: incomingFechaIso || existingData?.fecha_hora_iso || null } : {}),
+      ...(finalServicio ? { servicio: finalServicio } : {}),
+    };
+
     const payload = {
       telefono: normalized,
       nombre: finalNombre,
@@ -232,6 +243,7 @@ export async function saveLead({ telefono, nombre, distrito, fechaHoraISO, fecha
       fecha_hora_texto: incomingFechaTexto || (existingData?.fecha_hora_texto || null),
       // If incoming ISO is present and valid, always prefer it. Else preserve existing ISO if any.
       fecha_hora_iso: incomingFechaIso || (existingData?.fecha_hora_iso || null),
+      lead_snapshot: Object.keys(persistedLeadSnapshot).length ? persistedLeadSnapshot : null,
       updated_at: now,
     };
  

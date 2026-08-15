@@ -16,7 +16,7 @@ describe('geminiService refinements', () => {
   it('replaces [NOMBRE_CLINICA] with fallback when clinic.name absent', async () => {
     const prompt = geminiService.buildSystemPromptWithContext('51900000000@s.whatsapp.net', null, null);
     assert.ok(!prompt.includes('[NOMBRE_CLINICA]'));
-    assert.ok(prompt.includes('nuestra clínica dental'));
+    assert.ok(prompt.includes('Centro Especializado en Reumatología y Salud Ósea'));
   });
 
   it('injects confirmed patient name into prompt and removes [NOMBRE_PACIENTE]', async () => {

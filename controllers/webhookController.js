@@ -7,6 +7,17 @@ import chatwootService from '../services/chatwootService.js';
 import { getGeminiClient } from '../src/geminiClient.js';
 import { getSupabaseClient, getClinicByWabaPhoneId } from '../services/leadService.js';
 
+function normalizeIncomingText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  if (typeof value === 'object') {
+    const plain = extractPlainText(value);
+    return typeof plain === 'string' ? plain.trim() : '';
+  }
+  return String(value).trim();
+}
+
 function extractPlainText(input) {
   let cleaned = typeof input === 'string' ? input : JSON.stringify(input);
 
@@ -79,7 +90,7 @@ export default async function webhookController(req, res, next) {
 
     // Detect Chatwoot webhook (message_created)
     // Safe fallback for clinic name in case `clinic` is undefined in some webhook flows
-    let clinicName = process.env.CLINIC_NAME_FALLBACK || 'nuestra clínica dental';
+    let clinicName = process.env.CLINIC_NAME_FALLBACK || 'Centro Especializado en Reumatología y Salud Ósea';
     if (payload?.event === 'message_created' && payload?.payload) {
       const p = payload.payload;
       const message = p?.message || p?.content || null;
@@ -124,8 +135,9 @@ export default async function webhookController(req, res, next) {
       }
 
       // If user requests human or conversation unassigned, mark for human handover
-      const text = (message && (message.content || message.body || message.message)) ? (message.content || message.body || message.message) : (p?.content || null);
-      const wantsHuman = typeof text === 'string' && /asesor|humano|asesora|hablar con|asesor(a)?/i.test(text);
+      const rawText = (message && (message.content || message.body || message.message)) ? (message.content || message.body || message.message) : (p?.content || null);
+      const text = normalizeIncomingText(rawText);
+      const wantsHuman = typeof text === 'string' && text.length > 0 && /asesor|humano|asesora|hablar con|asesor(a)?/i.test(text);
       if (wantsHuman || (!assigneeId && convStatus === 'open')) {
         try {
           const accountId = payload.account_id || payload?.account?.id || null;
@@ -278,15 +290,15 @@ export default async function webhookController(req, res, next) {
       return;
     }
 
-    let messageText = null;
+    let messageText = '';
     if (message?.type === 'text') {
-      messageText = message?.text?.body?.trim();
+      messageText = normalizeIncomingText(message?.text?.body);
     } else if (message?.type === 'button') {
-      messageText = message?.button?.text?.trim();
+      messageText = normalizeIncomingText(message?.button?.text);
     } else if (message?.type === 'interactive') {
-      messageText = message?.interactive?.button_reply?.title?.trim() || message?.interactive?.list_reply?.title?.trim();
+      messageText = normalizeIncomingText(message?.interactive?.button_reply?.title || message?.interactive?.list_reply?.title);
     } else {
-      messageText = message?.text?.body?.trim() || null;
+      messageText = normalizeIncomingText(message?.text?.body);
     }
 
     if (!messageText) {
@@ -308,10 +320,11 @@ export default async function webhookController(req, res, next) {
     (async () => {
       try {
         const jid = `${from}@s.whatsapp.net`;
+        const safeMessageText = normalizeIncomingText(messageText);
 
         // Apply a 15s timeout to the Gemini call (requirement).
         const geminiClient = getGeminiClient();
-        const geminiPromise = geminiService.obtenerRespuestaIA(jid, messageText, { client: geminiClient, maxRetries: 1, maxOutputTokens: 100 });
+        const geminiPromise = geminiService.obtenerRespuestaIA(jid, safeMessageText, { client: geminiClient, maxRetries: 1, maxOutputTokens: 100 });
         const timeoutMs = 25_000;
         const timeoutPromise = new Promise((_, reject) => {
           const t = setTimeout(() => reject(new Error('gemini timeout')), timeoutMs);
@@ -329,23 +342,29 @@ export default async function webhookController(req, res, next) {
             clinic = null;
           }
         }
-        clinicName = (clinic && clinic.name) || process.env.CLINIC_NAME_FALLBACK || config.clinicNameFallback || 'nuestra clínica dental';
+        clinicName = (clinic && clinic.name) || process.env.CLINIC_NAME_FALLBACK || config.clinicNameFallback || 'Centro Especializado en Reumatología y Salud Ósea';
  
         let texto = 'Disculpa, hubo un problema procesando tu mensaje.';
         let leadData = null;
         let skipResponse = false;
+        let geminiResult = null;
         try {
-          const result = await Promise.race([geminiPromise, timeoutPromise]);
-          if (result) {
-            if (result.skipResponse) {
+          geminiResult = await Promise.race([geminiPromise, timeoutPromise]);
+          if (geminiResult) {
+            if (geminiResult.skipResponse) {
               skipResponse = true;
             } else {
-              texto = result.texto || result.text || (typeof result === 'string' ? result : texto);
-              leadData = result.leadData || null;
+              texto = geminiResult.texto || geminiResult.text || (typeof geminiResult === 'string' ? geminiResult : texto);
+              leadData = geminiResult.leadData || null;
             }
           }
         } catch (e) {
-          console.error('webhookController: gemini call failed or timed out', e && e.stack ? e.stack : e);
+          console.error('webhookController: gemini call failed or timed out', {
+            message: e && e.message ? e.message : String(e),
+            code: e && e.code ? e.code : null,
+            status: e && e.status ? e.status : null,
+            stack: e && e.stack ? e.stack : null,
+          });
           if (e && e.response) console.error('[GEMINI RESPONSE]:', e.response);
           // On failure, fallback message is already in texto
         }
@@ -363,13 +382,15 @@ export default async function webhookController(req, res, next) {
               console.warn('webhookController: no remitente phone available in WhatsApp event; skipping lead save to avoid using model-extracted phone');
             } else {
               const shouldConfirm = typeof messageText === 'string' && geminiService.isExplicitConfirmation(messageText);
-              if (!result.skipLeadPersistence) {
+              const servicioInteres = leadData.servicio || leadData.servicio_interes || leadData.opcion || leadData.option || leadData.servicioSolicitado || null;
+              if (!geminiResult || !geminiResult.skipLeadPersistence) {
                 leadResult = await leadService.saveLead({
                   telefono: telefonoKey,
                   nombre: leadData.nombre,
                   distrito: leadData.distrito,
                   fechaHoraISO: leadData.fechaHoraISO || leadData.fecha_hora_iso || null,
                   fechaHoraTexto: leadData.fechaHora || leadData.fecha_hora || null,
+                  servicio: servicioInteres,
                   confirmed: shouldConfirm,
                   clinicId: clinic?.id || null,
                   clinic: clinic || null,

@@ -5,7 +5,7 @@ import { saveLead } from './leads.js';
 
 
 const apiKey = process.env.GEMINI_API_KEY;
-const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const geminiModel = /^(gemini-(1\.5|2\.0|2\.5)[a-z0-9-]*)$/i.test(String(process.env.GEMINI_MODEL || '').trim()) ? process.env.GEMINI_MODEL : 'gemini-1.5-flash';
 const ttlMs = 30 * 60 * 1000;
 const contingencyMessage = 'En este momento nuestro sistema está ocupado, un asesor te responderá a la brevedad.';
 const chatSessions = new Map();
@@ -168,9 +168,10 @@ async function extractLeadData(history) {
       toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
     };
 
-    const result = await getModel().generateContent(request);
+    try {
+      const result = await getModel().generateContent(request);
 
-    // Preferir extracción formal desde response.functionCalls/toolCalls (más fiable que parsear texto)
+      // Preferir extracción formal desde response.functionCalls/toolCalls (más fiable que parsear texto)
     let argsObj = null;
 
     const functionCalls = result?.response?.functionCalls || result?.response?.toolCalls;
@@ -205,19 +206,33 @@ async function extractLeadData(history) {
       }
     }
 
-    if (argsObj) {
-      return {
-        nombre: argsObj.nombre ?? null,
-        telefono: argsObj.telefono ?? null,
-        distrito: argsObj.distrito ?? null,
-        fechaHora: argsObj.fechaHora ?? null,
-      };
-    }
+      if (argsObj) {
+        return {
+          nombre: argsObj.nombre ?? null,
+          telefono: argsObj.telefono ?? null,
+          distrito: argsObj.distrito ?? null,
+          fechaHora: argsObj.fechaHora ?? null,
+        };
+      }
 
-    // Fallback: si no hay functionCall, retornamos null sin interrumpir el flujo
-    return null;
+      // Fallback: si no hay functionCall, retornamos null sin interrumpir el flujo
+      return null;
+    } catch (e) {
+      console.error('[src/gemini.js] Gemini generateContent failed while extracting lead data', {
+        message: e && e.message ? e.message : String(e),
+        code: e && e.code ? e.code : null,
+        status: e && e.status ? e.status : null,
+        stack: e && e.stack ? e.stack : null,
+      });
+      return null;
+    }
   } catch (error) {
-    console.error('Error extrayendo los datos de agendamiento (function calling):', error);
+    console.error('[src/gemini.js] Error extrayendo los datos de agendamiento (function calling):', {
+      message: error && error.message ? error.message : String(error),
+      code: error && error.code ? error.code : null,
+      status: error && error.status ? error.status : null,
+      stack: error && error.stack ? error.stack : null,
+    });
 
     // Fallback heurístico reducido: solo usar cuando el error parece ser de red/timeout/servidor (no por modelo inexistente)
     // Por ejemplo: status undefined (network), 408 (timeout), >=500 (server error), o mensajes que contengan 'timeout'/'network'/'ECONNRESET'.
