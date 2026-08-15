@@ -192,7 +192,7 @@ export default async function webhookController(req, res, next) {
         maxOutputTokens: 100,
         skipLeadPersistence: Boolean(isAdminSender)
       });
-      let texto = 'Disculpa, hubo un problema procesando tu mensaje.';
+      let texto = geminiService.CONTINGENCY_MESSAGE || 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
       let leadData = null;
       try {
         const result = await geminiPromise;
@@ -326,21 +326,8 @@ export default async function webhookController(req, res, next) {
         const session = (() => { try { return geminiService.getOrCreateSession(jid); } catch (e) { return null; } })();
 
         // Greeting detection: only send menu on initial greeting when session has no history
-        const greetingRE = /^\s*(hola|buenas?|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|buen\s?d[ií]a|hi|hello)\b/i;
-        if (greetingRE.test(safeMessageText)) {
-          const hasHistory = session && Array.isArray(session.history) && session.history.length > 0;
-          if (!hasHistory) {
-            // mark user's greeting in session history so we don't treat next message as initial again
-            try { if (session && Array.isArray(session.history)) session.history.push({ role: 'user', parts: [{ text: safeMessageText }] }); } catch (_) {}
-            // Send main menu and return early (do not call Gemini)
-            try {
-              await whatsappService.sendWhatsAppMessage(from, geminiService.MAIN_MENU_TEXT, {});
-            } catch (e) {
-              console.error('webhookController: failed sending initial MAIN_MENU_TEXT', e && e.message ? e.message : e);
-            }
-            return;
-          }
-        }
+        // No static menus or hard-coded responses: delegate every incoming message to Gemini.
+        // (Removed greeting detection and MAIN_MENU fallback so Gemini handles the first greeting too.)
 
         // Apply a timeout to the Gemini call (requirement).
         // All messages other than a first greeting are delegated directly to Gemini to handle options and free text.
@@ -365,7 +352,7 @@ export default async function webhookController(req, res, next) {
         }
         clinicName = (clinic && clinic.name) || process.env.CLINIC_NAME_FALLBACK || config.clinicNameFallback || 'Centro Especializado en Reumatología y Salud Ósea';
  
-        let texto = 'Disculpa, hubo un problema procesando tu mensaje.';
+        let texto = geminiService.CONTINGENCY_MESSAGE || 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
         let leadData = null;
         let skipResponse = false;
         let geminiResult = null;

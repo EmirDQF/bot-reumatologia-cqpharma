@@ -75,9 +75,9 @@ Por favor, selecciona el número de la opción que necesitas o escríbenos tu co
 
 ¿En qué podemos ayudarte hoy?`
 
-const MAX_HISTORY_MESSAGES = Number(process.env.GEMINI_MAX_HISTORY || 6);
+const MAX_HISTORY_MESSAGES = Number(process.env.GEMINI_MAX_HISTORY || 10);
 const CLEANUP_MS = Number(process.env.GEMINI_CLEANUP_MS || 60 * 1000);
-const CONTINGENCY_MESSAGE = process.env.GEMINI_CONTINGENCY_MESSAGE || 'En este momento nuestro sistema está ocupado, un asesor te responderá a la brevedad.';
+const CONTINGENCY_MESSAGE = process.env.GEMINI_CONTINGENCY_MESSAGE || 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
 
 const chatSessions = new Map(); // sessionId -> { history: [], timer, paused: false }
 const failureCounts = new Map(); // sessionId -> consecutive failure count
@@ -1242,4 +1242,4 @@ export async function obtenerRespuestaIA(jid, mensaje, options = {}) {
   }
 }
 
-export default { obtenerRespuestaIA, sanitizeModelTextOutput, isExplicitConfirmation, MAIN_MENU_TEXT };
+export default { obtenerRespuestaIA, sanitizeModelTextOutput, isExplicitConfirmation, MAIN_MENU_TEXT, CONTINGENCY_MESSAGE, pauseSessionById, resumeSessionById, isSessionPaused };
