@@ -342,44 +342,10 @@ export default async function webhookController(req, res, next) {
           }
         }
 
-        // Option shortcuts: if user sends '1','2','3','4' or option keywords, handle with simulated dynamic flows
-        const opt1 = /^\s*(?:1|opci[oó]n\s*1|atenci[oó]n\s+general|atencion\s+general)\b/i.test(safeMessageText);
-        const opt2 = /^\s*(?:2|opci[oó]n\s*2|densitometr[ií]a|densitometria)\b/i.test(safeMessageText);
-        const opt3 = /^\s*(?:3|opci[oó]n\s*3|consulta\s+medica|consulta\s+m[eé]dica|consulta\s+reumatol[oó]gica)\b/i.test(safeMessageText);
-        const opt4 = /^\s*(?:4|opci[oó]n\s*4|medicamentos|suplementos|medicina|medicinas)\b/i.test(safeMessageText);
-
-        if (opt1 || opt2 || opt3 || opt4) {
-          let simulated = '';
-          try {
-            if (opt1) {
-              simulated = '¡Gracias por confiar en nosotros! Cuéntame, ¿qué síntomas o molestias articulares/óseas estás sintiendo? Por ejemplo: dolor de rodillas, dolor de espalda, dolor en manos, o rigidez matutina.';
-            } else if (opt2) {
-              simulated = 'La densitometría ósea es una prueba que mide la densidad mineral ósea y ayuda a diagnosticar osteoporosis. ¿Tienes orden médica para la prueba o es un chequeo preventivo? Tenemos turnos disponibles este martes a las 10:00 AM y el jueves a las 4:00 PM, ¿alguno te sirve?';
-            } else if (opt3) {
-              simulated = 'Podemos agendarte con nuestros especialistas. Disponibles: Dr. Carlos Mendoza - Reumatólogo, Dra. Mariana Flores - Especialista en Artritis y Artrosis. ¿Qué día prefieres y en qué franja horaria (mañana/tarde)?';
-            } else if (opt4) {
-              simulated = 'Ofrecemos varios productos: Calcio Citrato + Vitamina D3, Colágeno Hidrolizado, Magnesio Quelado y fijadores óseos. ¿Buscas algo para prevención, ya te diagnosticaron osteoporosis, o quieres coordinar recojo/delivery?';
-            }
-
-            // Append user input and simulated bot reply to session history so Gemini keeps context
-            try {
-              if (session && Array.isArray(session.history)) {
-                session.history.push({ role: 'user', parts: [{ text: safeMessageText }] });
-                session.history.push({ role: 'model', parts: [{ text: simulated }] });
-              }
-            } catch (_) {}
-
-            // Send simulated reply
-            await whatsappService.sendWhatsAppMessage(from, simulated, {});
-          } catch (e) {
-            console.error('webhookController: error sending simulated option reply', e && e.message ? e.message : e);
-          }
-          return;
-        }
-
-        // Apply a 15s timeout to the Gemini call (requirement).
+        // Apply a timeout to the Gemini call (requirement).
+        // All messages other than a first greeting are delegated directly to Gemini to handle options and free text.
         const geminiClient = getGeminiClient();
-        const geminiPromise = geminiService.obtenerRespuestaIA(jid, safeMessageText, { client: geminiClient, maxRetries: 1, maxOutputTokens: 100 });
+        const geminiPromise = geminiService.obtenerRespuestaIA(jid, safeMessageText, { client: geminiClient, maxRetries: 1, maxOutputTokens: 200 });
         const timeoutMs = 25_000;
         const timeoutPromise = new Promise((_, reject) => {
           const t = setTimeout(() => reject(new Error('gemini timeout')), timeoutMs);
@@ -421,7 +387,8 @@ export default async function webhookController(req, res, next) {
             stack: e && e.stack ? e.stack : null,
           });
           if (e && e.response) console.error('[GEMINI RESPONSE]:', e.response);
-          // On failure, fallback message is already in texto
+          // Friendly fallback for users when the AI fails
+          texto = 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
         }
  
         if (skipResponse) {
