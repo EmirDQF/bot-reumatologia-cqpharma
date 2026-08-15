@@ -319,8 +319,63 @@ export default async function webhookController(req, res, next) {
     // Use an immediately-invoked async function and internal try/catch to avoid unhandled rejections.
     (async () => {
       try {
-        const jid = `${from}@s.whatsapp.net`;
         const safeMessageText = normalizeIncomingText(messageText);
+
+        // Prepare session and detect initial greetings vs active conversation
+        const jid = `${from}@s.whatsapp.net`;
+        const session = (() => { try { return geminiService.getOrCreateSession(jid); } catch (e) { return null; } })();
+
+        // Greeting detection: only send menu on initial greeting when session has no history
+        const greetingRE = /^\s*(hola|buenas?|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|buen\s?d[ií]a|hi|hello)\b/i;
+        if (greetingRE.test(safeMessageText)) {
+          const hasHistory = session && Array.isArray(session.history) && session.history.length > 0;
+          if (!hasHistory) {
+            // mark user's greeting in session history so we don't treat next message as initial again
+            try { if (session && Array.isArray(session.history)) session.history.push({ role: 'user', parts: [{ text: safeMessageText }] }); } catch (_) {}
+            // Send main menu and return early (do not call Gemini)
+            try {
+              await whatsappService.sendWhatsAppMessage(from, geminiService.MAIN_MENU_TEXT, {});
+            } catch (e) {
+              console.error('webhookController: failed sending initial MAIN_MENU_TEXT', e && e.message ? e.message : e);
+            }
+            return;
+          }
+        }
+
+        // Option shortcuts: if user sends '1','2','3','4' or option keywords, handle with simulated dynamic flows
+        const opt1 = /^\s*(?:1|opci[oó]n\s*1|atenci[oó]n\s+general|atencion\s+general)\b/i.test(safeMessageText);
+        const opt2 = /^\s*(?:2|opci[oó]n\s*2|densitometr[ií]a|densitometria)\b/i.test(safeMessageText);
+        const opt3 = /^\s*(?:3|opci[oó]n\s*3|consulta\s+medica|consulta\s+m[eé]dica|consulta\s+reumatol[oó]gica)\b/i.test(safeMessageText);
+        const opt4 = /^\s*(?:4|opci[oó]n\s*4|medicamentos|suplementos|medicina|medicinas)\b/i.test(safeMessageText);
+
+        if (opt1 || opt2 || opt3 || opt4) {
+          let simulated = '';
+          try {
+            if (opt1) {
+              simulated = '¡Gracias por confiar en nosotros! Cuéntame, ¿qué síntomas o molestias articulares/óseas estás sintiendo? Por ejemplo: dolor de rodillas, dolor de espalda, dolor en manos, o rigidez matutina.';
+            } else if (opt2) {
+              simulated = 'La densitometría ósea es una prueba que mide la densidad mineral ósea y ayuda a diagnosticar osteoporosis. ¿Tienes orden médica para la prueba o es un chequeo preventivo? Tenemos turnos disponibles este martes a las 10:00 AM y el jueves a las 4:00 PM, ¿alguno te sirve?';
+            } else if (opt3) {
+              simulated = 'Podemos agendarte con nuestros especialistas. Disponibles: Dr. Carlos Mendoza - Reumatólogo, Dra. Mariana Flores - Especialista en Artritis y Artrosis. ¿Qué día prefieres y en qué franja horaria (mañana/tarde)?';
+            } else if (opt4) {
+              simulated = 'Ofrecemos varios productos: Calcio Citrato + Vitamina D3, Colágeno Hidrolizado, Magnesio Quelado y fijadores óseos. ¿Buscas algo para prevención, ya te diagnosticaron osteoporosis, o quieres coordinar recojo/delivery?';
+            }
+
+            // Append user input and simulated bot reply to session history so Gemini keeps context
+            try {
+              if (session && Array.isArray(session.history)) {
+                session.history.push({ role: 'user', parts: [{ text: safeMessageText }] });
+                session.history.push({ role: 'model', parts: [{ text: simulated }] });
+              }
+            } catch (_) {}
+
+            // Send simulated reply
+            await whatsappService.sendWhatsAppMessage(from, simulated, {});
+          } catch (e) {
+            console.error('webhookController: error sending simulated option reply', e && e.message ? e.message : e);
+          }
+          return;
+        }
 
         // Apply a 15s timeout to the Gemini call (requirement).
         const geminiClient = getGeminiClient();

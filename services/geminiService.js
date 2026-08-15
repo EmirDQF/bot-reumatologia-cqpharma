@@ -1279,17 +1279,15 @@ export async function obtenerRespuestaIA(jid, mensaje, options = {}) {
 
     return { texto, leadData, skipLeadPersistence: Boolean(options?.skipLeadPersistence) };
   } catch (e) {
-    // On any error while calling Gemini, return the main menu immediately to the user (safe fallback)
-    console.error('[geminiService] Gemini call failed, returning MAIN_MENU_TEXT to user to avoid exposing errors.', e && (e.message || e));
+    // Log detailed error and rethrow so controller can decide what to send to the user
+    console.error('[geminiService] Gemini call failed (rethrowing):', e && (e.message || e));
     try {
-      // Increment failure count for monitoring, but do NOT expose error to user
       const sid = getSessionId(jid);
       const prev = failureCounts.get(sid) || 0;
       failureCounts.set(sid, prev + 1);
     } catch (_) { /* ignore */ }
-
-    return { texto: MAIN_MENU_TEXT, leadData: null };
+    throw e;
   }
 }
 
-export default { obtenerRespuestaIA, sanitizeModelTextOutput, isExplicitConfirmation };
+export default { obtenerRespuestaIA, sanitizeModelTextOutput, isExplicitConfirmation, MAIN_MENU_TEXT };
