@@ -14,10 +14,9 @@ const ALLOWED_MODELS = [
   'gemini-1.5-pro',
   'gemini-1.5-flash-8b',
 ];
-// Clean any possible "models/" prefix from env var; fall back to first allowed model
-const geminiModelRaw = String(process.env.GEMINI_MODEL || '').trim();
-const geminiModel = geminiModelRaw ? geminiModelRaw.replace(/^models\//i, '') : ALLOWED_MODELS[0];
-console.info(`[src/gemini.js] GEMINI_MODEL raw: "${geminiModelRaw}" -> cleaned: "${geminiModel}"`);
+// Use GEMINI_MODEL exactly as provided in the environment (do not sanitize or overwrite)
+const geminiModel = (typeof process.env.GEMINI_MODEL === 'string' && process.env.GEMINI_MODEL.trim().length > 0) ? process.env.GEMINI_MODEL.trim() : ALLOWED_MODELS[0];
+console.info(`[src/gemini.js] GEMINI_MODEL from env (used as-is): "${String(process.env.GEMINI_MODEL || '')}"`);
 console.info(`[src/gemini.js] ALLOWED_MODELS: ${JSON.stringify(ALLOWED_MODELS)}`);
 const ttlMs = 30 * 60 * 1000;
 const contingencyMessage = 'En este momento nuestro sistema está ocupado, un asesor te responderá a la brevedad.';
@@ -54,10 +53,10 @@ async function generateContentWithModelFallback(request) {
 
   for (const modelName of modelsToTry) {
     try {
-      const cleanModelName = String(modelName || '').replace(/^models\//i, '');
+      // Use the modelName exactly as provided (no sanitization) when creating the SDK model
       const genAI = new GoogleGenerativeAI(apiKey);
       const m = genAI.getGenerativeModel({
-        model: cleanModelName,
+        model: modelName,
         systemInstruction: SYSTEM_PROMPT,
         generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
       });

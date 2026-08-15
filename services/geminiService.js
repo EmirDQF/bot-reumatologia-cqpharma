@@ -10,10 +10,9 @@ const ALLOWED_MODELS = [
   'gemini-1.5-flash-8b',
 ];
 
-// Log configured vs cleaned model on startup so Render logs show what will be attempted
+// Log configured model on startup (do NOT modify or sanitize process.env.GEMINI_MODEL here)
 const configuredModelRaw = (config && config.gemini && config.gemini.model) ? String(config.gemini.model) : (process.env.GEMINI_MODEL || '');
-const configuredModelClean = configuredModelRaw ? configuredModelRaw.replace(/^models\//i, '') : '';
-console.info(`[geminiService] Configured Gemini model (raw): "${configuredModelRaw}" -> cleaned: "${configuredModelClean || ALLOWED_MODELS[0]}"`);
+console.info(`[geminiService] Configured Gemini model (raw env): "${configuredModelRaw}"`);
 console.info(`[geminiService] Allowed models (fallback order): ${JSON.stringify(ALLOWED_MODELS)}`);
 
 const TTL_MS = Number(process.env.GEMINI_SESSION_TTL_MS || 30 * 60 * 1000); // 30 minutes
@@ -111,6 +110,18 @@ LÍMITES
 - No des diagnósticos ni recomendaciones médicas específicas.
 - No uses lenguaje ajeno a reumatología y salud ósea.
 `;
+
+// Menú principal corto a usar como fallback visible al usuario cuando Gemini falla
+const MAIN_MENU_TEXT = `¡Hola! Te damos la bienvenida a nuestro Centro Especializado en Reumatología y Salud Ósea 🦴✨
+
+Por favor, selecciona el número de la opción que necesitas o escríbenos tu consulta:
+
+1️⃣ Atención General / Información 🏥
+2️⃣ Densitometría Ósea (diagnóstico de osteoporosis y masa ósea) 🔬
+3️⃣ Consulta Médica con Especialista en Reumatología 👨‍⚕️👩‍⚕️
+4️⃣ Medicinas, Suplementos y Calcio 💊
+
+¿En qué podemos ayudarte hoy?`
 
 const MAX_HISTORY_MESSAGES = Number(process.env.GEMINI_MAX_HISTORY || 6);
 const CLEANUP_MS = Number(process.env.GEMINI_CLEANUP_MS || 60 * 1000);
@@ -911,14 +922,15 @@ function buildGeminiRequest(client, mensaje, history, jid, options = {}) {
 
 async function callClientWithRetries(client, geminiRequest, maxRetries = 1, options = {}) {
   // Attempt first the configured model (cleaned), then fall back to ALLOWED_MODELS order if a 404 is returned
+  // Use the environment-provided model name exactly as-is for the first attempt
   const configuredModelRawLocal = (config && config.gemini && config.gemini.model) ? String(config.gemini.model) : (process.env.GEMINI_MODEL || '');
-  const configuredModelLocal = configuredModelRawLocal.replace(/^models\//i, '') || ALLOWED_MODELS[0];
-  const modelsToTry = [configuredModelLocal, ...ALLOWED_MODELS.filter((m) => m !== configuredModelLocal)];
+  const modelsToTry = configuredModelRawLocal ? [configuredModelRawLocal, ...ALLOWED_MODELS.filter((m) => m !== configuredModelRawLocal)] : [...ALLOWED_MODELS];
 
   // Helper to attempt a single call with a given model (ensures model name is cleaned before calling SDK)
   async function attemptCallWithModel(modelName) {
-    const cleanModel = String(modelName || '').replace(/^models\//i, '');
-    console.info(`[geminiService] Attempting Gemini model: "${cleanModel}"`);
+    // Use model name exactly as provided (do not sanitize or strip prefixes here)
+    const rawModelToUse = String(modelName || '');
+    console.info(`[geminiService] Attempting Gemini model (raw): "${rawModelToUse}"`);
 
     if (!client || (typeof client.generate !== 'function' && typeof client.generateContent !== 'function')) {
       const fallbackText = typeof geminiRequest === 'object' && geminiRequest.prompt ? geminiRequest.prompt : '';
@@ -1267,16 +1279,16 @@ export async function obtenerRespuestaIA(jid, mensaje, options = {}) {
 
     return { texto, leadData, skipLeadPersistence: Boolean(options?.skipLeadPersistence) };
   } catch (e) {
-    const sid = getSessionId(jid);
-    const prev = failureCounts.get(sid) || 0;
-    const nowCount = prev + 1;
-    failureCounts.set(sid, nowCount);
+    // On any error while calling Gemini, return the main menu immediately to the user (safe fallback)
+    console.error('[geminiService] Gemini call failed, returning MAIN_MENU_TEXT to user to avoid exposing errors.', e && (e.message || e));
+    try {
+      // Increment failure count for monitoring, but do NOT expose error to user
+      const sid = getSessionId(jid);
+      const prev = failureCounts.get(sid) || 0;
+      failureCounts.set(sid, prev + 1);
+    } catch (_) { /* ignore */ }
 
-    if (nowCount >= 2) {
-      return { texto: CONTINGENCY_MESSAGE, leadData: null };
-    }
-
-    return { texto: 'Disculpa, estoy teniendo problemas para procesar tu solicitud. Por favor intenta de nuevo en unos momentos.', leadData: null };
+    return { texto: MAIN_MENU_TEXT, leadData: null };
   }
 }
 
