@@ -891,17 +891,17 @@ async function callClientWithRetries(client, geminiRequest, maxRetries = 1, opti
 
     // Structured client + structured request
     if (isStructuredGeminiClient(client) && geminiRequest?.type === 'structured') {
-      return await client.generateContent(geminiRequest.request, { model: cleanModel });
+      return await client.generateContent(geminiRequest.request, { model: rawModelToUse });
     }
 
     // Legacy generate API
     if (typeof client.generate === 'function') {
-      return await client.generate(geminiRequest.prompt || '', { model: cleanModel, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
+      return await client.generate(geminiRequest.prompt || '', { model: rawModelToUse, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
     }
 
     // Fallback to generateContent if available
     if (typeof client.generateContent === 'function' && geminiRequest?.type === 'structured') {
-      return await client.generateContent(geminiRequest.request, { model: cleanModel });
+      return await client.generateContent(geminiRequest.request, { model: rawModelToUse });
     }
 
     throw new Error('Gemini client does not support generate or generateContent');
@@ -980,11 +980,7 @@ export async function obtenerRespuestaIA(jid, mensaje, options = {}) {
   const now = Date.now();
   const sid = getSessionId(jid);
   const priorFailures = failureCounts.get(sid) || 0;
-  // Only debounce if there are no recent consecutive failures; if we have recent failures, allow retry even within debounce window
-  if (!skipDebounce && session.lastUserMessageAt && now - session.lastUserMessageAt < DEBOUNCE_MS && priorFailures === 0) {
-    session.lastUserMessageAt = now;
-    return { texto: null, leadData: null, skipResponse: true };
-  }
+  // No debounce: process every incoming message immediately and keep session.lastUserMessageAt updated.
   session.lastUserMessageAt = now;
   session.history.push({ role: 'user', parts: [{ text: mensaje }] });
   session.history = session.history.slice(-MAX_HISTORY_MESSAGES);
@@ -1242,4 +1238,33 @@ export async function obtenerRespuestaIA(jid, mensaje, options = {}) {
   }
 }
 
-export default { obtenerRespuestaIA, sanitizeModelTextOutput, isExplicitConfirmation, MAIN_MENU_TEXT, CONTINGENCY_MESSAGE, pauseSessionById, resumeSessionById, isSessionPaused };
+export async function generateResponseNoHistory(jid, mensaje, options = {}) {
+  const client = options.client;
+  // Ensure session exists and is loaded so we can access history for context (without mutating it)
+  const session = getOrCreateSession(jid);
+  await ensureSessionLoaded(session);
+
+  const geminiRequest = buildGeminiRequest(client, mensaje, session.history || [], jid, { ...options, session });
+  try {
+    const result = await callClientWithRetries(client, geminiRequest, (typeof options.maxRetries === 'number') ? options.maxRetries : 1, options);
+    const rawModelText = extractTextFromResult(result) || 'Disculpa, no pude procesar tu mensaje. ¿Puedes intentar decirlo de otra forma, por favor?';
+    const texto = sanitizeModelTextOutput(rawModelText);
+
+    // Try to extract lead JSON if present
+    let leadData = null;
+    try {
+      const leadRegex = /<<<LEAD_JSON>>>\s*([\s\S]*?)\s*<<<END_LEAD_JSON>>>/i;
+      const match = leadRegex.exec(rawModelText);
+      if (match && match[1]) {
+        try { leadData = normalizeLeadData(JSON.parse(match[1])); } catch (_) { leadData = null; }
+      }
+    } catch (_) { leadData = null; }
+
+    return { texto, leadData };
+  } catch (e) {
+    console.error('[geminiService] generateResponseNoHistory failed:', e && (e.message || e));
+    throw e;
+  }
+}
+
+export default { obtenerRespuestaIA, generateResponseNoHistory, sanitizeModelTextOutput, isExplicitConfirmation, MAIN_MENU_TEXT, CONTINGENCY_MESSAGE, pauseSessionById, resumeSessionById, isSessionPaused };

@@ -203,6 +203,35 @@ export default async function webhookController(req, res, next) {
       } catch (e) {
         console.error('webhookController: gemini call failed for chatwoot message', e && e.stack ? e.stack : e);
         if (e && e.response) console.error('[GEMINI RESPONSE]:', e.response);
+        // Friendly interim fallback
+        texto = geminiService.CONTINGENCY_MESSAGE || 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
+
+        // If this was a timeout, attempt a background retry and send a follow-up when available
+        const isTimeout = e && (String(e.message || '').toLowerCase().includes('timeout') || String(e.message || '').toLowerCase().includes('gemini timeout'));
+        if (isTimeout) {
+          (async () => {
+            try {
+              const follow = await geminiService.generateResponseNoHistory(jid, text || '', { client: geminiClient, maxRetries: 1, maxOutputTokens: 200 });
+              if (follow && follow.texto) {
+                // Send follow-up through Chatwoot if possible, else WhatsApp
+                const accountId = payload.account_id || payload?.account?.id || null;
+                const convId = conversation?.id || p?.conversation?.id;
+                const apiToken = (typeof clinic !== 'undefined' && clinic?.chatwoot_api_token) || process.env.CHATWOOT_API_TOKEN;
+                try {
+                  if (accountId && convId && apiToken) {
+                    await chatwootService.sendMessageToConversation(accountId, convId, apiToken, follow.texto);
+                  } else if (contactDigits) {
+                    await whatsappService.sendWhatsAppMessage(contactDigits, follow.texto, {});
+                  }
+                } catch (sendErr) {
+                  console.error('webhookController: failed to send follow-up after timeout retry', sendErr && sendErr.message ? sendErr.message : sendErr);
+                }
+              }
+            } catch (retryErr) {
+              console.error('webhookController: background retry after timeout failed', retryErr && retryErr.message ? retryErr.message : retryErr);
+            }
+          })();
+        }
       }
 
       // If leadData present, attempt to save lead using the contact's WhatsApp number as source-of-truth
@@ -374,8 +403,27 @@ export default async function webhookController(req, res, next) {
             stack: e && e.stack ? e.stack : null,
           });
           if (e && e.response) console.error('[GEMINI RESPONSE]:', e.response);
-          // Friendly fallback for users when the AI fails
-          texto = 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
+          // Friendly interim fallback for users when the AI fails
+          texto = geminiService.CONTINGENCY_MESSAGE || 'Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu número de teléfono y te contactaremos lo antes posible.';
+
+          // If this was a timeout, attempt a background retry and send a follow-up when available
+          const isTimeout = e && (String(e.message || '').toLowerCase().includes('timeout') || String(e.message || '').toLowerCase().includes('gemini timeout'));
+          if (isTimeout) {
+            (async () => {
+              try {
+                const follow = await geminiService.generateResponseNoHistory(jid, safeMessageText, { client: geminiClient, maxRetries: 1, maxOutputTokens: 300 });
+                if (follow && follow.texto) {
+                  try {
+                    await whatsappService.sendWhatsAppMessage(from, follow.texto, {});
+                  } catch (sendErr) {
+                    console.error('webhookController: failed to send follow-up after timeout retry', sendErr && sendErr.message ? sendErr.message : sendErr);
+                  }
+                }
+              } catch (retryErr) {
+                console.error('webhookController: background retry after timeout failed', retryErr && retryErr.message ? retryErr.message : retryErr);
+              }
+            })();
+          }
         }
  
         if (skipResponse) {
