@@ -61,7 +61,7 @@ Reglas operativas:
 - Mantén el hilo de la conversación: recuerda nombre y datos ya confirmados en la sesión.
 
 Comportamiento en fallos:
-- Si hay un error técnico o la IA no responde, responde con un mensaje amable pidiendo la consulta o teléfono: "Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu teléfono y te contactaremos lo antes posible."`;}
+- Si hay un error técnico o la IA no responde, responde con un mensaje amable pidiendo la consulta o teléfono: "Lo siento, en este momento estamos con problemas técnicos. Por favor deja tu consulta y tu teléfono y te contactaremos lo antes posible."`;
 
 // Menú principal corto a usar como fallback visible al usuario cuando Gemini falla
 const MAIN_MENU_TEXT = `¡Hola! Te damos la bienvenida a nuestro Centro Especializado en Reumatología y Salud Ósea 🦴✨
