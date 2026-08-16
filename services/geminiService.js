@@ -1,4 +1,5 @@
 import config from '../config/env.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Expanded model fallback list (include older 1.5 variants and 2.0 fallback)
 const ALLOWED_MODELS = [
@@ -884,6 +885,35 @@ async function callClientWithRetries(client, geminiRequest, maxRetries = 1, opti
     const rawModelToUse = String(modelName || '');
     console.info(`[geminiService] Attempting Gemini model (raw): "${rawModelToUse}"`);
 
+    // Prefer creating a fresh model instance per-attempt using GoogleGenerativeAI so the exact target model is used.
+    const apiKey = (config && config.gemini && config.gemini.apiKey) ? config.gemini.apiKey : (process.env.GEMINI_API_KEY || null);
+    const maxOutputTokens = options.maxOutputTokens || config.gemini?.maxOutputTokens || 100;
+
+    if (apiKey) {
+      try {
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const modelInstance = genAI.getGenerativeModel({ model: rawModelToUse, generationConfig: { maxOutputTokens } });
+
+        if (isStructuredGeminiClient(modelInstance) && geminiRequest?.type === 'structured') {
+          return await modelInstance.generateContent(geminiRequest.request);
+        }
+
+        if (typeof modelInstance.generate === 'function') {
+          return await modelInstance.generate(geminiRequest.prompt || '', { maxOutputTokens });
+        }
+
+        if (typeof modelInstance.generateContent === 'function' && geminiRequest?.type === 'structured') {
+          return await modelInstance.generateContent(geminiRequest.request);
+        }
+
+        // If modelInstance didn't expose expected methods, fall back to provided client below
+      } catch (instErr) {
+        console.warn(`[geminiService] Failed to instantiate per-attempt model ${rawModelToUse}:`, instErr && instErr.message ? instErr.message : instErr);
+        // continue to fallback to the provided shared client
+      }
+    }
+
+    // Fallback: use provided client if available
     if (!client || (typeof client.generate !== 'function' && typeof client.generateContent !== 'function')) {
       const fallbackText = typeof geminiRequest === 'object' && geminiRequest.prompt ? geminiRequest.prompt : '';
       return { text: `Echo: ${String(fallbackText).slice(0, 200)}` };
@@ -896,7 +926,7 @@ async function callClientWithRetries(client, geminiRequest, maxRetries = 1, opti
 
     // Legacy generate API
     if (typeof client.generate === 'function') {
-      return await client.generate(geminiRequest.prompt || '', { model: rawModelToUse, maxOutputTokens: options.maxOutputTokens || config.gemini?.maxOutputTokens || 100 });
+      return await client.generate(geminiRequest.prompt || '', { model: rawModelToUse, maxOutputTokens });
     }
 
     // Fallback to generateContent if available
@@ -968,7 +998,8 @@ async function callClientWithRetries(client, geminiRequest, maxRetries = 1, opti
     }
   }
 
-  throw lastErr || new Error('client failed');
+  console.error('[geminiService] All model attempts failed; returning MAIN_MENU_TEXT as safe fallback', lastErr && (lastErr.message || lastErr));
+  return { text: MAIN_MENU_TEXT };
 }
 
 export async function obtenerRespuestaIA(jid, mensaje, options = {}) {

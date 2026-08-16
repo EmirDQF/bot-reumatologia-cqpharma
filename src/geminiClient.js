@@ -5,14 +5,9 @@ let cachedClient = null;
 
 function normalizeGeminiModelName(rawName) {
   const value = typeof rawName === 'string' ? rawName.trim() : '';
-  if (!value) return 'gemini-1.5-flash';
-  const normalized = value.toLowerCase();
-  const validPattern = /^gemini-(1\.5|2\.0|2\.5)[a-z0-9-]*/i;
-  if (validPattern.test(normalized)) {
-    return value;
-  }
-  console.warn(`[geminiClient] Invalid GEMINI_MODEL value "${rawName}". Falling back to "gemini-1.5-flash".`);
-  return 'gemini-1.5-flash';
+  // Do not force a fallback model here. Return the raw value (may be empty) and let callers decide behavior.
+  if (!value) return '';
+  return value;
 }
 
 export function getGeminiClient() {
